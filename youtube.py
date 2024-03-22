@@ -1,103 +1,63 @@
-import time
-import random
 import requests
-from googlesearch import search
-from bs4 import BeautifulSoup
 
-def search_with_proxy(query, proxies):
-    # Choose a random proxy
-    proxy = random.choice(proxies)
-    
+def read_existing_links(output_file):
+    existing_titles = set()
+    existing_urls = set()
+
     try:
-        # Make the search request using requests library with the chosen proxy
-        response = requests.get(f"https://www.google.com/search?q={query}", proxies=proxy)
-        response.raise_for_status()
-        return response.content
-    except requests.exceptions.RequestException as e:
-        print(f"Error occurred while making the search request: {e}")
-        return None
+        with open(output_file, 'r') as f:
+            lines = f.readlines()
+            for i in range(0, len(lines), 3):
+                existing_titles.add(lines[i].strip())
+                existing_urls.add(lines[i+1].strip())
+    except FileNotFoundError:
+        pass
 
-def search_youtube_videos(titles_file, output_file, proxies):
-    print("Reading titles from the input file...")
-    # Read titles from the input file
-    with open(titles_file, 'r') as file:
-        titles = file.readlines()
+    return existing_titles, existing_urls
 
-    # Open output file to write links
-    print("Searching for YouTube videos...")
-    with open(output_file, 'w') as outfile:
-        for idx, title in enumerate(titles):
-            query = f'"{title.strip()}" youtube'  # Enclose the title in double quotes for exact match
-            print(f"Searching for video '{query}' ({idx + 1}/{len(titles)})...")
-            
-            # Print the query being searched
-            print(f"Searching for: {query}")
-            
-            # Perform the search request using a proxy
-            search_html = search_with_proxy(query, proxies)
-            if search_html:
-                # Parse the HTML response
-                soup = BeautifulSoup(search_html, 'html.parser')
-                
-                # Extract video link from search results
-                video_found = False
-                result_count = 0
-                for link in soup.find_all('a'):
-                    url = link.get('href')
-                    if url and url.startswith("/url?q=https://www.youtube.com/watch"):
-                        result_count += 1
-                        if result_count <= 5:  # Limiting to 5 results
-                            print(f"Result {result_count}:")
-                            print(f"Title: {title.strip()}")
-                            print(f"Link: {url}\n")
-                            outfile.write(f"{title.strip()}\n{url}\n\n")
-                        video_found = True
-                        if result_count == 5:  # Break if 5 results are found
-                            break
+def search_youtube_videos(titles, api_key, output_file):
+    base_url = 'https://www.googleapis.com/youtube/v3/search'
+    max_results = 5  # Number of search results to retrieve per title
+    existing_titles, existing_urls = read_existing_links(output_file)
+    new_video_links = []
 
-                if not video_found:
-                    print("No video found in the search results.")
-                    edit = input("Do you want to edit the title? (yes/no): ")
-                    if edit.lower() == "yes":
-                        new_title = input("Enter the modified title: ")
-                        titles[idx] = new_title + "\n"
-                        continue
-            else:
-                print("Failed to retrieve search results. Skipping to the next title.")
-            
-            # Add exponential backoff to handle rate limiting
-            retries = 0
-            while True:
-                retries += 1
-                if retries > 100:
-                    print("Exceeded maximum number of retries. Moving to the next title.")
-                    break
-                
-                # Calculate the delay using exponential backoff
-                delay = 2 ** retries
-                print(f"Waiting for {delay} seconds before retrying...")
-                time.sleep(delay)
-                
-                # Perform the search request again
-                search_html = search_with_proxy(query, proxies)
-                if search_html:
-                    # If successful, break out of the retry loop
-                    break
+    for title in titles:
+        if title in existing_titles:
+            print(f"Skipping title '{title}' as it already exists in the output file.")
+            continue
 
-# Provide input and output file names
-titles_file = 'titles.txt'
+        params = {
+            'part': 'snippet',
+            'q': title,
+            'maxResults': max_results,
+            'key': api_key
+        }
+
+        response = requests.get(base_url, params=params)
+        if response.status_code == 200:
+            data = response.json()
+            for item in data.get('items', []):
+                if 'videoId' in item['id']:
+                    video_id = item['id']['videoId']
+                    video_title = item['snippet']['title']
+                    video_link = f'https://www.youtube.com/watch?v={video_id}'
+                    if video_link not in existing_urls:
+                        new_video_links.append((video_title, video_link))
+                        print(f"Found new video: {video_title} - {video_link}")
+                else:
+                    print(f"No video ID found for item: {item}")
+        else:
+            print(f"Error: {response.status_code} - {response.text}")
+
+    # Append new links to output file
+    with open(output_file, 'a') as f:
+        for video_title, video_link in new_video_links:
+            f.write(f"{video_title}\n{video_link}\n\n")
+
+# Example usage
+api_key = 'AIzaSyBUV4_zc5bNcfv0C_ghoUB2siS8MMa-A2g'
 output_file = 'video_links.txt'
-              
-# Provide input and output file names
-titles_file = 'titles.txt'
-output_file = 'video_links.txt'
+with open('titles.txt', 'r') as file:
+    titles = [line.strip() for line in file.readlines()]
 
-# List of proxies (replace with your list)
-proxies = [
-    {'http': '8.222.222.64:80'},
-    {'http': '35.185.196.38:3128'},
-    # Add more proxies as needed
-]
-
-# Call the function with proxies
-search_youtube_videos(titles_file, output_file, proxies)
+search_youtube_videos(titles, api_key, output_file)
